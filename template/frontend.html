@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DRRA — Disaster Response Resource Allocator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #06080f;
+      --bg2:       #0b0f1a;
+      --panel:     #0e1220;
+      --panel2:    #121828;
+      --border:    #1a2235;
+      --border2:   #243048;
+      --red:       #ff2d2d;
+      --orange:    #ff7a00;
+      --yellow:    #f0c000;
+      --blue:      #2d8bff;
+      --green:     #00e57a;
+      --text:      #d8e0f0;
+      --muted:     #4a5570;
+      --muted2:    #6a7590;
+      --glow-red:  rgba(255,45,45,0.18);
+      --glow-blue: rgba(45,139,255,0.12);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── scanline overlay ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 9999;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.04) 2px,
+        rgba(0,0,0,0.04) 4px
+      );
+      pointer-events: none;
+    }
+
+    /* ── animated grid bg ── */
+    .grid-bg {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background-image:
+        linear-gradient(rgba(45,139,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(45,139,255,0.025) 1px, transparent 1px);
+      background-size: 50px 50px;
+      animation: gridShift 20s linear infinite;
+    }
+    @keyframes gridShift {
+      from { background-position: 0 0; }
+      to   { background-position: 50px 50px; }
+    }
+
+    /* ── corner glow ── */
+    .corner-glow {
+      position: fixed; z-index: 0; pointer-events: none;
+      border-radius: 50%;
+      filter: blur(80px);
+    }
+    .corner-glow.tl {
+      top: -100px; left: -100px;
+      width: 400px; height: 400px;
+      background: radial-gradient(circle, rgba(255,45,45,0.06), transparent 70%);
+      animation: glowPulse 5s ease-in-out infinite;
+    }
+    .corner-glow.br {
+      bottom: -100px; right: -100px;
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(45,139,255,0.06), transparent 70%);
+      animation: glowPulse 7s ease-in-out infinite reverse;
+    }
+    @keyframes glowPulse {
+      0%,100% { opacity: 0.6; transform: scale(1); }
+      50%      { opacity: 1;   transform: scale(1.1); }
+    }
+
+    /* ══════════════ HEADER ══════════════ */
+    header {
+      position: sticky; top: 0; z-index: 100;
+      height: 64px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 32px;
+      background: rgba(6,8,15,0.85);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      display: flex; align-items: center; gap: 14px;
+    }
+    .logo-mark {
+      position: relative;
+      width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .logo-mark svg { position: relative; z-index: 1; }
+    .logo-mark::before {
+      content: '';
+      position: absolute; inset: -4px;
+      border: 1px solid var(--red);
+      animation: rotateBorder 8s linear infinite;
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    }
+    @keyframes rotateBorder {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+
+    .logo-name {
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700; font-size: 1.1rem;
+      letter-spacing: 0.25em; text-transform: uppercase;
+    }
+    .logo-name span { color: var(--red); }
+
+    .header-center {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.65rem; letter-spacing: 0.12em;
+      color: var(--muted2);
+    }
+    .live-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: liveBlink 1.4s ease-in-out infinite;
+    }
+    @keyframes liveBlink {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.2; }
+    }
+
+    .header-right {
+      display: flex; align-items: center; gap: 20px;
+    }
+    .clock {
+      font-size: 0.75rem;
+      color: var(--muted2);
+      letter-spacing: 0.08em;
+    }
+    .clock span { color: var(--blue); }
+
+    /* ══════════════ MAIN ══════════════ */
+    main {
+      position: relative; z-index: 1;
+      max-width: 1500px; margin: 0 auto;
+      padding: 32px 32px 60px;
+    }
+
+    /* ── section label ── */
+    .section-label {
+      font-size: 0.6rem; letter-spacing: 0.22em;
+      text-transform: uppercase; color: var(--red);
+      margin-bottom: 6px;
+    }
+    .section-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700; font-size: clamp(1.8rem, 3vw, 2.6rem);
+      color: var(--text); line-height: 1.1;
+    }
+    .section-title em { font-style: normal; color: var(--red); }
+
+    /* ── stats ── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin: 28px 0;
+    }
+
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 18px 20px;
+      position: relative;
+      overflow: hidden;
+      cursor: default;
+      transition: border-color 0.3s, transform 0.2s;
+      animation: fadeUp 0.5s both;
+    }
+    .stat:hover {
+      border-color: var(--s-color, var(--border2));
+      transform: translateY(-2px);
+    }
+    .stat::after {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--s-color, var(--muted));
+      box-shadow: 0 0 12px var(--s-color, transparent);
+    }
+    .stat-val {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 2.6rem; font-weight: 700; line-height: 1;
+      color: var(--s-color, var(--text));
+    }
+    .stat-lbl {
+      font-size: 0.58rem; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--muted2);
+      margin-top: 6px;
+    }
+    .stat-icon {
+      position: absolute; right: 16px; top: 16px;
+      font-size: 1.2rem; opacity: 0.2;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── main layout ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 16px;
+    }
+
+    /* ── panel base ── */
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .panel-head {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .panel-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 0.8rem; font-weight: 600;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--text);
+    }
+    .panel-badge {
+      font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase;
+      padding: 3px 10px;
+      border: 1px solid var(--border2);
+      color: var(--muted2);
+    }
+
+    /* ── map ── */
+    #map { width: 100%; height: 460px; }
+
+    .leaflet-container { background: #060912 !important; }
+    .leaflet-tile-pane {
+      filter: invert(1) hue-rotate(200deg) saturate(0.4) brightness(0.6) contrast(1.2);
+    }
+    .leaflet-popup-content-wrapper {
+      background: var(--panel2) !important;
+      color: var(--text) !important;
+      border-radius: 0 !important;
+      border: 1px solid var(--red) !important;
+      box-shadow: 0 0 24px rgba(255,45,45,0.25) !important;
+      font-family: 'JetBrains Mono', monospace !important;
+      font-size: 0.72rem !important;
+    }
+    .leaflet-popup-tip { background: var(--red) !important; }
+    .leaflet-control-zoom a {
+      background: var(--panel) !important;
+      color: var(--text) !important;
+      border-color: var(--border2) !important;
+    }
+    .leaflet-control-zoom a:hover {
+      background: var(--panel2) !important;
+    }
+
+    /* map toolbar */
+    .map-toolbar {
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    }
+    .filter-btn {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase;
+      padding: 5px 12px;
+      border: 1px solid var(--border2);
+      background: transparent; color: var(--muted2);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover, .filter-btn.active {
+      background: var(--f-color, var(--border2));
+      border-color: var(--f-color, var(--border2));
+      color: #fff;
+      box-shadow: 0 0 10px var(--f-color, transparent);
+    }
+    .filter-sep { width: 1px; background: var(--border); margin: 0 4px; height: 20px; }
+
+    /* ── sidebar ── */
+    .sidebar { display: flex; flex-direction: column; gap: 16px; }
+
+    /* legend */
+    .legend-rows { padding: 12px 20px; display: flex; flex-direction: column; gap: 10px; }
+    .legend-row {
+      display: flex; align-items: center; gap: 12px;
+      font-size: 0.68rem;
+    }
+    .l-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+    .l-label { color: var(--text); font-weight: 500; }
+    .l-sub { font-size: 0.58rem; color: var(--muted2); margin-top: 1px; }
+
+    /* incident cards */
+    .inc-list { max-height: 380px; overflow-y: auto; }
+    .inc-list::-webkit-scrollbar { width: 3px; }
+    .inc-list::-webkit-scrollbar-thumb { background: var(--red); }
+    .inc-list::-webkit-scrollbar-track { background: transparent; }
+
+    .inc-card {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .inc-card::before {
+      content: '';
+      position: absolute; left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: var(--c-sev, var(--muted));
+      box-shadow: 2px 0 8px var(--c-sev, transparent);
+    }
+    .inc-card:hover { background: rgba(45,139,255,0.04); }
+    .inc-card.active { background: rgba(255,45,45,0.06); }
+
+    .inc-top {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .inc-type {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 0.9rem; font-weight: 600; color: var(--text);
+    }
+    .sev-tag {
+      font-size: 0.5rem; letter-spacing: 0.12em; text-transform: uppercase;
+      padding: 2px 8px;
+      border: 1px solid var(--c-sev, var(--muted));
+      color: var(--c-sev, var(--muted));
+      background: rgba(255,255,255,0.03);
+    }
+    .inc-loc { font-size: 0.62rem; color: var(--muted2); }
+    .inc-res { font-size: 0.6rem; color: var(--muted); margin-top: 3px; }
+
+    /* ── full table ── */
+    .table-wrap {
+      margin-top: 16px;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%; border-collapse: collapse;
+      font-size: 0.7rem;
+    }
+    thead {
+      position: sticky; top: 0;
+      background: var(--panel2);
+    }
+    th {
+      padding: 11px 18px; text-align: left;
+      font-size: 0.55rem; letter-spacing: 0.18em;
+      text-transform: uppercase; color: var(--muted2);
+      border-bottom: 1px solid var(--border2);
+      white-space: nowrap;
+    }
+    td {
+      padding: 11px 18px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      white-space: nowrap;
+    }
+    tbody tr { transition: background 0.15s; }
+    tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+    .sev-cell {
+      display: inline-flex; align-items: center; gap: 7px;
+    }
+    .sev-pip {
+      width: 7px; height: 7px; border-radius: 50%;
+      box-shadow: 0 0 6px currentColor;
+    }
+    .coord-cell { color: var(--muted); font-size: 0.62rem; }
+
+    /* row number */
+    .row-num { color: var(--muted); font-size: 0.6rem; }
+
+    /* fetch btn */
+    .fetch-btn {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 0.75rem; font-weight: 600;
+      letter-spacing: 0.16em; text-transform: uppercase;
+      padding: 8px 18px;
+      background: var(--red); color: #fff;
+      border: none; cursor: pointer;
+      position: relative; overflow: hidden;
+      transition: box-shadow 0.2s, transform 0.1s;
+    }
+    .fetch-btn::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.15) 50%, transparent 100%);
+      transform: translateX(-100%);
+      transition: transform 0.4s;
+    }
+    .fetch-btn:hover::after { transform: translateX(100%); }
+    .fetch-btn:hover {
+      box-shadow: 0 0 20px rgba(255,45,45,0.5);
+    }
+    .fetch-btn:active { transform: scale(0.97); }
+
+    /* error */
+    .error-bar {
+      display: none;
+      margin: 10px 20px;
+      padding: 10px 14px;
+      background: rgba(255,45,45,0.08);
+      border: 1px solid rgba(255,45,45,0.3);
+      border-left: 3px solid var(--red);
+      font-size: 0.65rem; color: var(--red);
+    }
+
+    /* empty state */
+    .empty {
+      padding: 36px 20px;
+      text-align: center;
+      font-size: 0.65rem; letter-spacing: 0.1em;
+      color: var(--muted);
+    }
+
+    /* timestamp */
+    .ts { font-size: 0.58rem; color: var(--muted); }
+
+    /* alert strip */
+    .alert-strip {
+      display: none;
+      align-items: center; gap: 12px;
+      padding: 8px 20px;
+      background: rgba(255,45,45,0.07);
+      border-bottom: 1px solid rgba(255,45,45,0.2);
+      font-size: 0.62rem; color: var(--red);
+      letter-spacing: 0.06em;
+      overflow: hidden;
+    }
+    .alert-strip.show { display: flex; }
+    .alert-icon { font-size: 0.8rem; animation: liveBlink 1s infinite; }
+    .alert-scroll {
+      flex: 1; white-space: nowrap;
+      animation: scrollText 18s linear infinite;
+    }
+    @keyframes scrollText {
+      from { transform: translateX(100%); }
+      to   { transform: translateX(-100%); }
+    }
+
+    /* stagger anims */
+    .stat:nth-child(1) { animation-delay: 0.05s; }
+    .stat:nth-child(2) { animation-delay: 0.10s; }
+    .stat:nth-child(3) { animation-delay: 0.15s; }
+    .stat:nth-child(4) { animation-delay: 0.20s; }
+    .stat:nth-child(5) { animation-delay: 0.25s; }
+
+    @media (max-width: 1024px) {
+      .layout { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 600px) {
+      main { padding: 16px; }
+      header { padding: 0 16px; }
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .logo-name { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+<div class="corner-glow tl"></div>
+<div class="corner-glow br"></div>
+
+<!-- ══ HEADER ══ -->
+<header>
+  <div class="logo">
+    <div class="logo-mark">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <path d="M10 2L18 15H2L10 2Z" stroke="#ff2d2d" stroke-width="1.5"/>
+        <circle cx="10" cy="11" r="2" fill="#ff2d2d"/>
+      </svg>
+    </div>
+    <div class="logo-name">DR<span>RA</span> // Bengaluru</div>
+  </div>
+
+  <div class="header-center">
+    <div class="live-dot"></div>
+    <span>SYSTEM OPERATIONAL</span>
+  </div>
+
+  <div class="header-right">
+    <div class="clock">UTC+5:30 &nbsp;<span id="clock">--:--:--</span></div>
+  </div>
+</header>
+
+<!-- ══ ALERT STRIP ══ -->
+<div class="alert-strip" id="alertStrip">
+  <span class="alert-icon">⚠</span>
+  <span class="alert-scroll" id="alertText"></span>
+</div>
+
+<!-- ══ MAIN ══ -->
+<main>
+  <div class="section-label">// Emergency Operations</div>
+  <div class="section-title">Incident Command <em>Dashboard</em></div>
+
+  <!-- Stats -->
+  <div class="stats-grid">
+    <div class="stat" style="--s-color:var(--text)">
+      <div class="stat-val" id="sTotal">—</div>
+      <div class="stat-lbl">Total Incidents</div>
+      <div class="stat-icon">📋</div>
+    </div>
+    <div class="stat" style="--s-color:var(--red)">
+      <div class="stat-val" id="sCrit">—</div>
+      <div class="stat-lbl">Critical</div>
+      <div class="stat-icon">🔴</div>
+    </div>
+    <div class="stat" style="--s-color:var(--orange)">
+      <div class="stat-val" id="sHigh">—</div>
+      <div class="stat-lbl">High</div>
+      <div class="stat-icon">🟠</div>
+    </div>
+    <div class="stat" style="--s-color:var(--yellow)">
+      <div class="stat-val" id="sMod">—</div>
+      <div class="stat-lbl">Moderate</div>
+      <div class="stat-icon">🟡</div>
+    </div>
+    <div class="stat" style="--s-color:var(--green)">
+      <div class="stat-val" id="sRes">—</div>
+      <div class="stat-lbl">Resources Deployed</div>
+      <div class="stat-icon">🚑</div>
+    </div>
+  </div>
+
+  <!-- Map + Sidebar -->
+  <div class="layout">
+
+    <!-- Map panel -->
+    <div class="panel" style="animation: fadeUp 0.5s 0.3s both;">
+      <div class="panel-head">
+        <div class="panel-title">Live Incident Map</div>
+        <button class="fetch-btn" onclick="loadIncidents()">⟳ &nbsp;Load Incidents</button>
+      </div>
+      <div class="map-toolbar" id="toolbar" style="display:none">
+        <button class="filter-btn active" style="--f-color:var(--text)" data-sev="all" onclick="filterBySev(this,'all')">All</button>
+        <div class="filter-sep"></div>
+        <button class="filter-btn" style="--f-color:var(--red)"    data-sev="Critical" onclick="filterBySev(this,'Critical')">Critical</button>
+        <button class="filter-btn" style="--f-color:var(--orange)"  data-sev="High"     onclick="filterBySev(this,'High')">High</button>
+        <button class="filter-btn" style="--f-color:var(--yellow)"  data-sev="Moderate" onclick="filterBySev(this,'Moderate')">Moderate</button>
+        <button class="filter-btn" style="--f-color:var(--blue)"    data-sev="Low"      onclick="filterBySev(this,'Low')">Low</button>
+      </div>
+      <div class="error-bar" id="errBar"></div>
+      <div id="map"></div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar" style="animation: fadeUp 0.5s 0.4s both;">
+
+      <!-- Legend -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">Severity Scale</div>
+        </div>
+        <div class="legend-rows">
+          <div class="legend-row">
+            <div class="l-dot" style="background:var(--red);box-shadow:0 0 8px var(--red)"></div>
+            <div>
+              <div class="l-label">Critical</div>
+              <div class="l-sub">Immediate deployment required</div>
+            </div>
+          </div>
+          <div class="legend-row">
+            <div class="l-dot" style="background:var(--orange);box-shadow:0 0 8px var(--orange)"></div>
+            <div>
+              <div class="l-label">High</div>
+              <div class="l-sub">Priority dispatch active</div>
+            </div>
+          </div>
+          <div class="legend-row">
+            <div class="l-dot" style="background:var(--yellow);box-shadow:0 0 8px var(--yellow)"></div>
+            <div>
+              <div class="l-label">Moderate</div>
+              <div class="l-sub">Standard response protocol</div>
+            </div>
+          </div>
+          <div class="legend-row">
+            <div class="l-dot" style="background:var(--blue);box-shadow:0 0 8px var(--blue)"></div>
+            <div>
+              <div class="l-label">Low</div>
+              <div class="l-sub">Monitoring in progress</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Incident cards -->
+      <div class="panel" style="flex:1">
+        <div class="panel-head">
+          <div class="panel-title">Active Incidents</div>
+          <div class="panel-badge" id="incCount">0 ACTIVE</div>
+        </div>
+        <div class="inc-list" id="incList">
+          <div class="empty">// Awaiting data feed</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="panel" style="margin-top:16px; animation: fadeUp 0.5s 0.5s both;">
+    <div class="panel-head">
+      <div class="panel-title">Allocation Register</div>
+      <div class="ts" id="ts"></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Type</th>
+            <th>Location</th>
+            <th>Severity</th>
+            <th>Assigned Resource</th>
+            <th>Coordinates</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="tBody">
+          <tr>
+            <td colspan="7" style="text-align:center;padding:28px;color:var(--muted);font-size:0.65rem;">
+              No incidents loaded — press "Load Incidents"
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+  /* ═══ DATA ═══ */
+  const RAW_DATA = [
+    { type:"Medical Emergency", location:"Bengaluru North", severity:"Critical", resource:"Ambulance #3",   coords:[13.05,77.59] },
+    { type:"Fire",              location:"Bengaluru East",  severity:"High",     resource:"Fire Truck #2",  coords:[12.98,77.65] },
+    { type:"Flood",             location:"Bengaluru South", severity:"Moderate", resource:"Rescue Boat #1", coords:[12.90,77.58] },
+    { type:"Rescue",            location:"Bengaluru West",  severity:"Critical", resource:"Rescue Team #4", coords:[12.97,77.50] },
+  ];
+
+  const SEV = {
+    Critical: "var(--red)",
+    High:     "var(--orange)",
+    Moderate: "var(--yellow)",
+    Low:      "var(--blue)",
+  };
+  const SEV_HEX = { Critical:"#ff2d2d", High:"#ff7a00", Moderate:"#f0c000", Low:"#2d8bff" };
+
+  let allIncidents = [];
+  let mapMarkers = [];
+  let activeCard = null;
+
+  /* ═══ CLOCK ═══ */
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('clock').textContent =
+      now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  /* ═══ MAP ═══ */
+  const map = L.map('map', { zoomControl: true }).setView([12.97, 77.58], 11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution:'© OpenStreetMap'
+  }).addTo(map);
+
+  /* ═══ LOAD ═══ */
+  function loadIncidents() {
+    // To use live backend: replace with fetch("http://127.0.0.1:5000/incidents").then(r=>r.json()).then(render)
+    render(RAW_DATA);
+  }
+
+  function render(incidents) {
+    allIncidents = incidents;
+    updateStats(incidents);
+    renderMap(incidents);
+    renderCards(incidents);
+    renderTable(incidents);
+    showAlertStrip(incidents);
+    document.getElementById('toolbar').style.display = 'flex';
+    document.getElementById('ts').textContent =
+      'Updated: ' + new Date().toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  }
+
+  /* ═══ STATS ═══ */
+  function updateStats(incidents) {
+    animateCount('sTotal', incidents.length);
+    animateCount('sCrit',  incidents.filter(i=>i.severity==='Critical').length);
+    animateCount('sHigh',  incidents.filter(i=>i.severity==='High').length);
+    animateCount('sMod',   incidents.filter(i=>i.severity==='Moderate').length);
+    animateCount('sRes',   incidents.length); // 1 resource per incident
+  }
+
+  function animateCount(id, target) {
+    let start = 0;
+    const el = document.getElementById(id);
+    const step = () => {
+      start += Math.ceil((target - start) / 6);
+      el.textContent = start;
+      if (start < target) requestAnimationFrame(step);
+      else el.textContent = target;
+    };
+    requestAnimationFrame(step);
+  }
+
+  /* ═══ MAP MARKERS ═══ */
+  function renderMap(incidents) {
+    mapMarkers.forEach(m => map.removeLayer(m));
+    mapMarkers = [];
+
+    incidents.forEach((inc, idx) => {
+      const hex = SEV_HEX[inc.severity] || '#888';
+      const isCrit = inc.severity === 'Critical';
+
+      // Outer pulse ring
+      const ring = L.circleMarker(inc.coords, {
+        radius: isCrit ? 18 : 13,
+        color: hex, fillColor: hex,
+        fillOpacity: 0.08, weight: 1, opacity: 0.4,
+      }).addTo(map);
+
+      // Inner dot using divIcon
+      const icon = L.divIcon({
+        className: '',
+        html: `
+          <div style="
+            width:${isCrit?16:12}px; height:${isCrit?16:12}px;
+            border-radius:50%;
+            background:${hex};
+            border:2px solid rgba(255,255,255,0.3);
+            box-shadow:0 0 ${isCrit?20:12}px ${hex}, 0 0 ${isCrit?40:20}px ${hex}40;
+            ${isCrit ? 'animation:liveBlink 1s ease-in-out infinite;' : ''}
+          "></div>`,
+        iconSize: [isCrit?16:12, isCrit?16:12],
+        iconAnchor: [isCrit?8:6, isCrit?8:6],
+      });
+      const dot = L.marker(inc.coords, { icon }).addTo(map);
+
+      dot.bindPopup(`
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.7rem;line-height:1.8;min-width:180px">
+          <div style="color:${hex};font-weight:700;font-size:0.85rem;margin-bottom:4px;border-bottom:1px solid ${hex}30;padding-bottom:4px">
+            ${inc.type.toUpperCase()}
+          </div>
+          <div>📍 &nbsp;${inc.location}</div>
+          <div style="color:${hex}">⚠ &nbsp;${inc.severity}</div>
+          <div>🚑 &nbsp;${inc.resource}</div>
+          <div style="color:#4a5570;font-size:0.6rem;margin-top:6px">
+            ${inc.coords[0].toFixed(4)}, ${inc.coords[1].toFixed(4)}
+          </div>
+        </div>
+      `);
+
+      dot.on('click', () => highlightCard(idx));
+      mapMarkers.push(ring, dot);
+    });
+  }
+
+  /* ═══ INCIDENT CARDS ═══ */
+  function renderCards(incidents) {
+    const list = document.getElementById('incList');
+    document.getElementById('incCount').textContent = incidents.length + ' ACTIVE';
+    if (!incidents.length) {
+      list.innerHTML = '<div class="empty">No incidents found</div>';
+      return;
+    }
+    list.innerHTML = '';
+    incidents.forEach((inc, idx) => {
+      const hex = SEV_HEX[inc.severity] || '#888';
+      const card = document.createElement('div');
+      card.className = 'inc-card';
+      card.id = 'card-' + idx;
+      card.style.setProperty('--c-sev', hex);
+      card.innerHTML = `
+        <div class="inc-top">
+          <div class="inc-type">${inc.type}</div>
+          <div class="sev-tag" style="--c-sev:${hex}">${inc.severity}</div>
+        </div>
+        <div class="inc-loc">📍 ${inc.location}</div>
+        <div class="inc-res">→ ${inc.resource}</div>
+      `;
+      card.onclick = () => {
+        map.setView(inc.coords, 13, { animate: true });
+        highlightCard(idx);
+        mapMarkers.forEach((m,i) => { if (m.openPopup && i === idx*2+1) m.openPopup(); });
+      };
+      list.appendChild(card);
+    });
+  }
+
+  function highlightCard(idx) {
+    if (activeCard !== null) {
+      const prev = document.getElementById('card-' + activeCard);
+      if (prev) prev.classList.remove('active');
+    }
+    const el = document.getElementById('card-' + idx);
+    if (el) { el.classList.add('active'); el.scrollIntoView({ block:'nearest', behavior:'smooth' }); }
+    activeCard = idx;
+  }
+
+  /* ═══ TABLE ═══ */
+  function renderTable(incidents) {
+    const tbody = document.getElementById('tBody');
+    tbody.innerHTML = '';
+    incidents.forEach((inc, i) => {
+      const hex = SEV_HEX[inc.severity] || '#888';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="row-num">${String(i+1).padStart(2,'0')}</td>
+        <td><strong>${inc.type}</strong></td>
+        <td>${inc.location}</td>
+        <td>
+          <span class="sev-cell">
+            <span class="sev-pip" style="background:${hex};color:${hex}"></span>
+            <span style="color:${hex}">${inc.severity}</span>
+          </span>
+        </td>
+        <td>${inc.resource}</td>
+        <td class="coord-cell">${inc.coords[0].toFixed(4)}, ${inc.coords[1].toFixed(4)}</td>
+        <td style="color:var(--green);font-size:0.6rem;letter-spacing:0.08em">● ACTIVE</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  /* ═══ ALERT STRIP ═══ */
+  function showAlertStrip(incidents) {
+    const crits = incidents.filter(i => i.severity === 'Critical');
+    if (!crits.length) return;
+    const strip = document.getElementById('alertStrip');
+    strip.classList.add('show');
+    document.getElementById('alertText').textContent =
+      crits.map(c => `CRITICAL ALERT: ${c.type.toUpperCase()} at ${c.location} — ${c.resource} deployed`).join('   ///   ');
+  }
+
+  /* ═══ FILTER ═══ */
+  function filterBySev(btn, sev) {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const filtered = sev === 'all' ? allIncidents : allIncidents.filter(i => i.severity === sev);
+    renderMap(filtered);
+    renderCards(filtered);
+    renderTable(filtered);
+  }
+
+  /* ═══ ERROR ═══ */
+  function showError(msg) {
+    const bar = document.getElementById('errBar');
+    bar.style.display = 'block';
+    bar.textContent = '⚠ ' + msg;
+  }
+
+  /* ═══ AUTO LOAD ═══ */
+  window.addEventListener('load', () => setTimeout(loadIncidents, 400));
+</script>
+</body>
+</html>

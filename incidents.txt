@@ -1,0 +1,5 @@
+IncidentType,Location,Severity,AssignedResource,Latitude,Longitude
+Medical Emergency,Bengaluru North,Critical,Ambulance #3,13.05,77.59
+Fire,Bengaluru East,High,Fire Truck #2,12.98,77.65
+Flood,Bengaluru South,Moderate,Rescue Boat #1,12.90,77.58
+Rescue,Bengaluru West,Critical,Rescue Team #4,12.97,77.50
